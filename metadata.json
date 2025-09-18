@@ -1,0 +1,6 @@
+{
+  "name": "PDF Batch Summarizer",
+  "description": "An application to automatically analyze a folder of PDF files using a custom prompt with the Gemini API and generate summaries in Markdown or Text format.",
+  "requestFramePermissions": [],
+  "prompt": ""
+}
