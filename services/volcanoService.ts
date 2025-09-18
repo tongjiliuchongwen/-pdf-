@@ -1,6 +1,7 @@
 
 interface VolcanoCredentials {
     apiKey: string;
+    modelId: string;
 }
   
 /**
@@ -8,7 +9,7 @@ interface VolcanoCredentials {
  * The API is OpenAI-compatible, using Bearer token authentication.
  * 
  * @param fullPrompt The complete prompt including PDF text and user instructions.
- * @param creds The Volcano Engine credentials containing the API key.
+ * @param creds The Volcano Engine credentials containing the API key and model ID.
  * @returns A promise that resolves to the summary text.
  */
 export const generateSummaryFromVolcano = async (
@@ -20,13 +21,12 @@ export const generateSummaryFromVolcano = async (
     if (!creds.apiKey) {
         return "Error: Volcano Engine API Key is required but was not provided.";
     }
+    if (!creds.modelId) {
+        return "Error: Volcano Engine Model ID is required but was not provided.";
+    }
 
     // This is the endpoint for Volcano Engine's Ark API, which is OpenAI-compatible.
     const apiEndpoint = 'https://ark.cn-beijing.volces.com/api/v3/chat/completions';
-    
-    // This is an example model ID from the documentation. 
-    // You may need to replace this with your specific model endpoint ID.
-    const modelId = 'ep-20250718110917-jckmt';
 
     try {
         const response = await fetch(apiEndpoint, {
@@ -36,7 +36,7 @@ export const generateSummaryFromVolcano = async (
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-                model: modelId,
+                model: creds.modelId,
                 messages: [{ role: 'user', content: fullPrompt }],
             }),
         });

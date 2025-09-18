@@ -17,13 +17,15 @@ declare module 'react' {
 }
 
 type ApiProvider = 'gemini' | 'volcano';
+type OutputFormat = 'text' | 'markdown';
 
 const App: React.FC = () => {
     const [files, setFiles] = useState<File[]>([]);
     const [prompt, setPrompt] = useState<string>("Summarize this document in three key bullet points.");
     const [apiProvider, setApiProvider] = useState<ApiProvider>('gemini');
+    const [outputFormat, setOutputFormat] = useState<OutputFormat>('text');
     const [selectedModel, setSelectedModel] = useState<string>('gemini-2.5-flash');
-    const [volcanoCreds, setVolcanoCreds] = useState({ apiKey: '' });
+    const [volcanoCreds, setVolcanoCreds] = useState({ apiKey: '', modelId: 'ep-20250718110917-jckmt' });
     const [results, setResults] = useState<SummaryResult[]>([]);
     const [isProcessing, setIsProcessing] = useState<boolean>(false);
     const [globalError, setGlobalError] = useState<string>('');
@@ -41,13 +43,13 @@ const App: React.FC = () => {
         const selectedFiles = event.target.files;
         if (selectedFiles) {
             const allFiles = Array.from(selectedFiles);
-            const pdfFiles = allFiles.filter((file: File) => file.type === 'application/pdf');
-            if(pdfFiles.length !== allFiles.length) {
-                setGlobalError("Some selected files were not PDFs and have been ignored.");
+            const supportedFiles = allFiles.filter((file: File) => file.type === 'application/pdf' || file.name.endsWith('.md'));
+            if(supportedFiles.length !== allFiles.length) {
+                setGlobalError("Some selected files were not PDFs or Markdown files and have been ignored.");
             } else {
                 setGlobalError("");
             }
-            setFiles(pdfFiles);
+            setFiles(supportedFiles);
             setResults([]); // Reset results when new files are selected
         }
     };
@@ -65,24 +67,45 @@ const App: React.FC = () => {
         return fullText;
     };
 
-    const constructFullPrompt = (pdfText: string, userPrompt: string): string => {
+    const parseMd = (file: File): Promise<string> => {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                if (event.target && typeof event.target.result === 'string') {
+                    resolve(event.target.result);
+                } else {
+                    reject(new Error("Failed to read Markdown file."));
+                }
+            };
+            reader.onerror = (err) => {
+                reject(new Error("Error reading Markdown file: " + err));
+            };
+            reader.readAsText(file);
+        });
+    };
+
+    const constructFullPrompt = (fileText: string, userPrompt: string, format: OutputFormat): string => {
+        const formatInstruction = format === 'markdown'
+            ? 'The final output should be in MARKDOWN format.'
+            : 'The final output should be in plain TEXT format.';
+        
         return `
-          Based on the following user request, please analyze the provided PDF content and generate a response.
+          Based on the following user request, please analyze the provided document content and generate a response.
     
           USER REQUEST:
           "${userPrompt}"
     
-          The final output should be in plain TEXT format.
+          ${formatInstruction}
     
-          --- PDF CONTENT START ---
-          ${pdfText}
-          --- PDF CONTENT END ---
+          --- DOCUMENT CONTENT START ---
+          ${fileText}
+          --- DOCUMENT CONTENT END ---
         `;
     };
 
     const handleGenerate = useCallback(async () => {
         if (files.length === 0 || !prompt.trim()) {
-            setGlobalError("Please select a folder with PDFs and enter a prompt.");
+            setGlobalError("Please select a folder with supported files and enter a prompt.");
             return;
         }
 
@@ -99,12 +122,20 @@ const App: React.FC = () => {
         for (let i = 0; i < files.length; i++) {
             const file = files[i];
             try {
-                const pdfText = await parsePdf(file);
-                if (!pdfText.trim()) {
-                   throw new Error("Could not extract any text from the PDF. It might be an image-only PDF.");
+                let fileText = '';
+                if (file.name.endsWith('.pdf')) {
+                    fileText = await parsePdf(file);
+                } else if (file.name.endsWith('.md')) {
+                    fileText = await parseMd(file);
+                } else {
+                    throw new Error(`Unsupported file type: ${file.name}`);
+                }
+                
+                if (!fileText.trim()) {
+                   throw new Error(`Could not extract any text from ${file.name}. It might be empty or an image-only PDF.`);
                 }
 
-                const fullPrompt = constructFullPrompt(pdfText, prompt);
+                const fullPrompt = constructFullPrompt(fileText, prompt, outputFormat);
                 let summary = '';
 
                 if (apiProvider === 'gemini') {
@@ -130,7 +161,7 @@ const App: React.FC = () => {
         }
 
         setIsProcessing(false);
-    }, [files, prompt, selectedModel, apiProvider, volcanoCreds]);
+    }, [files, prompt, selectedModel, apiProvider, volcanoCreds, outputFormat]);
 
     const handleDownloadZip = useCallback(() => {
         const zip = new JSZip();
@@ -142,24 +173,27 @@ const App: React.FC = () => {
         }
 
         successfulResults.forEach(result => {
-            const fileName = result.fileName.replace('.pdf', '.txt');
+            const extension = outputFormat === 'markdown' ? '.md' : '.txt';
+            const originalExtension = result.fileName.endsWith('.pdf') ? '.pdf' : '.md';
+            const baseName = result.fileName.substring(0, result.fileName.length - originalExtension.length);
+            const fileName = `${baseName}${extension}`;
             zip.file(fileName, result.content);
         });
 
         zip.generateAsync({ type: 'blob' }).then((content: any) => {
             const link = document.createElement('a');
             link.href = URL.createObjectURL(content);
-            link.download = 'pdf_summaries.zip';
+            link.download = 'summaries.zip';
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
         });
-    }, [results]);
+    }, [results, outputFormat]);
 
     const isReadyToGenerate = useMemo(() => {
         if (!files.length || !prompt.trim()) return false;
         if (apiProvider === 'gemini') return !apiKeyMissing;
-        if (apiProvider === 'volcano') return !!volcanoCreds.apiKey;
+        if (apiProvider === 'volcano') return !!volcanoCreds.apiKey && !!volcanoCreds.modelId;
         return false;
     }, [files, prompt, apiProvider, apiKeyMissing, volcanoCreds]);
 
@@ -170,9 +204,9 @@ const App: React.FC = () => {
             <main className="max-w-4xl mx-auto p-4 md:p-8">
                 <header className="text-center mb-8">
                     <h1 className="text-4xl md:text-5xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-cyan-400">
-                        PDF Batch Summarizer
+                        Batch Content Summarizer
                     </h1>
-                    <p className="mt-2 text-lg text-gray-400">Analyze an entire folder of PDFs with a single prompt.</p>
+                    <p className="mt-2 text-lg text-gray-400">Analyze an entire folder of PDFs and Markdown files with a single prompt.</p>
                 </header>
 
                 {apiKeyMissing && apiProvider === 'gemini' && (
@@ -192,13 +226,13 @@ const App: React.FC = () => {
                 <div className="space-y-8">
                     {/* Step 1: File Selection */}
                     <div className="bg-gray-800/50 p-6 rounded-2xl border border-gray-700/50">
-                        <h2 className="text-xl font-semibold mb-4 text-cyan-300">Step 1: Select PDF Files</h2>
+                        <h2 className="text-xl font-semibold mb-4 text-cyan-300">Step 1: Select Files</h2>
                         <label htmlFor="file-upload" className="relative cursor-pointer bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 px-5 rounded-lg inline-flex items-center transition-colors duration-200">
                            <FolderIcon className="w-5 h-5 mr-2" />
-                           <span>{files.length > 0 ? `${files.length} PDF(s) Selected` : 'Select a Folder of PDFs'}</span>
+                           <span>{files.length > 0 ? `${files.length} File(s) Selected` : 'Select a Folder of PDFs/MDs'}</span>
                         </label>
-                        <input id="file-upload" type="file" className="hidden" multiple accept="application/pdf" onChange={handleFileSelect} webkitdirectory="true" />
-                        <p className="text-sm text-gray-400 mt-3">Your browser will ask for permission to read the contents of a folder. Only PDF files will be processed.</p>
+                        <input id="file-upload" type="file" className="hidden" multiple accept="application/pdf,.md" onChange={handleFileSelect} webkitdirectory="true" />
+                        <p className="text-sm text-gray-400 mt-3">Your browser will ask for permission to read the contents of a folder. Only PDF and Markdown (.md) files will be processed.</p>
                     </div>
 
                     {/* Step 2: Configure Generation */}
@@ -222,13 +256,33 @@ const App: React.FC = () => {
                             {apiProvider === 'volcano' && (
                                 <div className="space-y-4 p-4 bg-gray-900/50 rounded-lg border border-gray-700">
                                     <h3 className="text-md font-semibold text-gray-300">Volcano Engine Credentials</h3>
-                                    <div>
-                                        <label htmlFor="volcano-key" className="block text-xs font-medium text-gray-400 mb-1">API Key</label>
-                                        <input id="volcano-key" type="password" value={volcanoCreds.apiKey} onChange={e => setVolcanoCreds({ apiKey: e.target.value })} className="w-full p-2 bg-gray-800 border border-gray-600 rounded-lg focus:ring-1 focus:ring-purple-500 focus:border-purple-500 transition" />
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <div>
+                                            <label htmlFor="volcano-key" className="block text-xs font-medium text-gray-400 mb-1">API Key</label>
+                                            <input id="volcano-key" type="password" value={volcanoCreds.apiKey} onChange={e => setVolcanoCreds(prev => ({ ...prev, apiKey: e.target.value }))} className="w-full p-2 bg-gray-800 border border-gray-600 rounded-lg focus:ring-1 focus:ring-purple-500 focus:border-purple-500 transition" />
+                                        </div>
+                                        <div>
+                                            <label htmlFor="volcano-model" className="block text-xs font-medium text-gray-400 mb-1">Model Endpoint ID</label>
+                                            <input id="volcano-model" type="text" value={volcanoCreds.modelId} onChange={e => setVolcanoCreds(prev => ({ ...prev, modelId: e.target.value }))} className="w-full p-2 bg-gray-800 border border-gray-600 rounded-lg focus:ring-1 focus:ring-purple-500 focus:border-purple-500 transition" placeholder="e.g., ep-20250718110917-jckmt" />
+                                        </div>
                                     </div>
-                                     <p className="text-xs text-gray-500 mt-2">Your API key is used only for this session and is not stored anywhere.</p>
+                                     <p className="text-xs text-gray-500 mt-2">Your credentials are used only for this session and are not stored anywhere.</p>
                                 </div>
                             )}
+
+                             <div>
+                                <label className="block text-sm font-medium text-gray-300 mb-2">Output Format</label>
+                                <div className="flex space-x-4">
+                                    <label className="flex items-center space-x-2 cursor-pointer">
+                                        <input type="radio" name="outputFormat" value="text" checked={outputFormat === 'text'} onChange={() => setOutputFormat('text')} className="form-radio h-4 w-4 text-purple-600 bg-gray-700 border-gray-600 focus:ring-purple-500" />
+                                        <span>Text (.txt)</span>
+                                    </label>
+                                    <label className="flex items-center space-x-2 cursor-pointer">
+                                        <input type="radio" name="outputFormat" value="markdown" checked={outputFormat === 'markdown'} onChange={() => setOutputFormat('markdown')} className="form-radio h-4 w-4 text-purple-600 bg-gray-700 border-gray-600 focus:ring-purple-500" />
+                                        <span>Markdown (.md)</span>
+                                    </label>
+                                </div>
+                            </div>
 
                             <div>
                                 <label htmlFor="prompt-textarea" className="block text-sm font-medium text-gray-300 mb-2">Define Your Prompt</label>
